@@ -835,6 +835,14 @@
 					>
 				</File>
 			</Filter>
+			<Filter
+				Name="siv"
+				>
+				<File
+					RelativePath="src\encauth\siv\siv.c"
+					>
+				</File>
+			</Filter>
 		</Filter>
 		<Filter
 			Name="hashes"

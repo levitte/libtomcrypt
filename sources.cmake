@@ -85,6 +85,7 @@ src/encauth/ocb3/ocb3_init.c
 src/encauth/ocb3/ocb3_int_ntz.c
 src/encauth/ocb3/ocb3_int_xor_blocks.c
 src/encauth/ocb3/ocb3_test.c
+src/encauth/siv/siv.c
 src/hashes/blake2b.c
 src/hashes/blake2s.c
 src/hashes/chc/chc.c
