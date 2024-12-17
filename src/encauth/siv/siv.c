@@ -1,6 +1,7 @@
 /* LibTomCrypt, modular cryptographic library -- Tom St Denis */
 /* SPDX-License-Identifier: Unlicense */
 #include "tomcrypt_private.h"
+#include <stdarg.h>
 
 /**
   @file siv.c
@@ -9,7 +10,7 @@
 
 #ifdef LTC_SIV_MODE
 
-static void s_siv_dbl(unsigned char *inout)
+static LTC_INLINE void s_siv_dbl(unsigned char *inout)
 {
    int y, mask, msb, len;
 
@@ -27,6 +28,87 @@ static void s_siv_dbl(unsigned char *inout)
    inout[len - 1] = ((inout[len - 1] << 1) ^ (msb ? mask : 0)) & 255;
 }
 
+static LTC_INLINE int s_siv_S2V_zero(int cipher,
+                    const unsigned char *key,    unsigned long keylen,
+                          unsigned char *D,      unsigned long *Dlen)
+{
+   /* D = AES-CMAC(K, <zero>) */
+   const unsigned char zero_or_one[16] = {0};
+   return omac_memory(cipher, key, keylen, zero_or_one, sizeof(zero_or_one), D, Dlen);
+}
+
+static LTC_INLINE int s_siv_S2V_one(int cipher,
+                    const unsigned char *key,    unsigned long keylen,
+                          unsigned char *V,      unsigned long *Vlen)
+{
+   /* if n = 0 then
+    *   return V = AES-CMAC(K, <one>)
+    */
+   unsigned char zero_or_one[16] = {0};
+   zero_or_one[0] = 1;
+   return omac_memory(cipher, key, keylen, zero_or_one, sizeof(zero_or_one), V, Vlen);
+}
+static LTC_INLINE int s_siv_S2V_dbl_xor_cmac(int cipher,
+                                             const unsigned char *key,    unsigned long keylen,
+                                             const unsigned char *aad,    unsigned long aadlen,
+                                                     unsigned char *D,      unsigned long Dlen)
+{
+   /* for i = 1 to n-1 do
+    *   D = dbl(D) xor AES-CMAC(K, Si)
+    * done
+    */
+   int err;
+   unsigned char TMP[16];
+   unsigned long i, TMPlen = sizeof(TMP);
+   s_siv_dbl(D);
+   if ((err = omac_memory(cipher, key, keylen, aad, aadlen, TMP, &TMPlen)) != CRYPT_OK) {
+      return err;
+   }
+   for (i = 0; i < Dlen; ++i) {
+      D[i] ^= TMP[i];
+   }
+   return err;
+}
+
+static LTC_INLINE int s_siv_S2V_T(int cipher,
+                  const unsigned char *in,     unsigned long inlen,
+                  const unsigned char *key,    unsigned long keylen,
+                        unsigned char *D,
+                        unsigned char *V,      unsigned long *Vlen)
+{
+   int err;
+   unsigned long i;
+   unsigned char T[16];
+
+   /* if len(Sn) >= 128 then
+    *   T = Sn xorend D
+    * else
+    *   T = dbl(D) xor pad(Sn)
+    * fi
+    */
+   if (inlen >= 16) {
+      XMEMCPY(T, &in[inlen - 16], 16);
+      for(i = 0; i < 16; ++i) {
+         T[i] ^= D[i];
+      }
+      err = omac_memory_multi(cipher, key, keylen, V, Vlen, in, inlen - 16, T, 16uL, NULL);
+   } else {
+      s_siv_dbl(D);
+      XMEMCPY(T, in, inlen);
+      T[inlen] = 0x80;
+      for (i = inlen + 1; i < 16; ++i) {
+         T[i] = 0x0;
+      }
+      for(i = 0; i < 16; ++i) {
+         T[i] ^= D[i];
+      }
+
+      err = omac_memory(cipher, key, keylen, T, 16, V, Vlen);
+   }
+   return err;
+}
+
+
 static int s_siv_S2V(int cipher,
     const unsigned char *key,    unsigned long keylen,
     const unsigned char **ad,    unsigned long *adlen,
@@ -34,76 +116,32 @@ static int s_siv_S2V(int cipher,
           unsigned char *V,      unsigned long *Vlen)
 {
    int err, n;
-   unsigned long Dlen, TMPlen, Tlen, i, j;
-   unsigned char D[16], TMP[16], *T;
-   unsigned char zero_or_one[16] = {0};
+   unsigned char D[16];
+   unsigned long Dlen = sizeof(D);
 
    if(ad == NULL || adlen == NULL || ad[0] == NULL || adlen[0] == 0) {
-      /* if n = 0 then
-       *   return V = AES-CMAC(K, <one>)
-       */
-      zero_or_one[0] = 1;
-      err = omac_memory(cipher, key, keylen, zero_or_one, sizeof(zero_or_one), V, Vlen);
+      err = s_siv_S2V_one(cipher, key, keylen, V, Vlen);
    } else {
-      /* D = AES-CMAC(K, <zero>) */
       Dlen = sizeof(D);
-      if ((err = omac_memory(cipher, key, keylen, zero_or_one, sizeof(zero_or_one), D, &Dlen)) != CRYPT_OK) {
+      if ((err = s_siv_S2V_zero(cipher, key, keylen, D, &Dlen)) != CRYPT_OK) {
          return err;
       }
-      /* for i = 1 to n-1 do
-       *   D = dbl(D) xor AES-CMAC(K, Si)
-       * done
-       */
+
       n = 0;
       while(ad[n] != NULL && adlen[n] != 0) {
-         s_siv_dbl(D);
-         TMPlen = sizeof(TMP);
-         if ((err = omac_memory(cipher, key, keylen, ad[n], adlen[n], TMP, &TMPlen)) != CRYPT_OK) {
+         if ((err = s_siv_S2V_dbl_xor_cmac(cipher, key, keylen, ad[n], adlen[n], D, Dlen)) != CRYPT_OK) {
             return err;
-         }
-         for (i = 0; i < sizeof(D); ++i) {
-            D[i] ^= TMP[i];
          }
          n++;
       }
-      /* if len(Sn) >= 128 then
-       *   T = Sn xorend D
-       * else
-       *   T = dbl(D) xor pad(Sn)
-       * fi
-       */
-      Tlen = inlen >= 16 ? inlen : 16;
-      T = XMALLOC(Tlen);
-      if (T == NULL) {
-         return CRYPT_MEM;
-      }
-      XMEMCPY(T, in, inlen);
-      if (inlen >= 16) {
-         for(i = inlen - 16, j = 0; i < inlen; ++i, ++j) {
-            T[i] = D[j] ^ T[i];
-         }
-      } else {
-         s_siv_dbl(D);
-         T[inlen] = 0x80;
-         for (i = inlen + 1; i < 16; ++i) {
-            T[i] = 0x0;
-         }
-         for(i = 0; i < Tlen; ++i) {
-            T[i] ^= D[i];
-         }
-      }
-      err = omac_memory(cipher, key, keylen, T, Tlen, V, Vlen);
-#ifdef LTC_CLEAN_STACK
-      zeromem(T, Tlen);
-#endif
-      XFREE(T);
+
+      err = s_siv_S2V_T(cipher, in, inlen, key, keylen, D, V, Vlen);
    }
 
    return err;
-
 }
 
-static void s_siv_bitand(const unsigned char* V, unsigned char* Q)
+static LTC_INLINE void s_siv_bitand(const unsigned char* V, unsigned char* Q)
 {
    int n;
    XMEMSET(Q, 0xff, 16);
@@ -113,10 +151,32 @@ static void s_siv_bitand(const unsigned char* V, unsigned char* Q)
    }
 }
 
+static LTC_INLINE int s_ctr_crypt_memory(int   cipher,
+                          const unsigned char *IV,
+                          const unsigned char *key,           int keylen,
+                          const unsigned char *in,
+                                unsigned char *out, unsigned long len)
+{
+   int err;
+   symmetric_CTR ctr;
+
+   if ((err = ctr_start(cipher, IV, key, keylen, 0, CTR_COUNTER_BIG_ENDIAN | 16, &ctr)) != CRYPT_OK) {
+      goto out;
+   }
+   if ((err = ctr_encrypt(in, out, len, &ctr)) != CRYPT_OK) {
+      goto out;
+   }
+   if ((err = ctr_done(&ctr)) != CRYPT_OK) {
+      goto out;
+   }
+
+out:
+   zeromem(&ctr, sizeof(ctr));
+   return err;
+}
 
 typedef struct {
-   unsigned char V[16];
-   symmetric_CTR ctr;
+   unsigned char Q[16], V[16];
 } siv_state;
 
 /**
@@ -135,12 +195,11 @@ typedef struct {
 */
 int siv_encrypt(int cipher,
     const unsigned char *key,    unsigned long keylen,
-    const unsigned char **ad,    unsigned long *adlen,
+    const unsigned char *ad[],   unsigned long adlen[],
     const unsigned char *pt,     unsigned long ptlen,
           unsigned char *ct,     unsigned long *ctlen)
 {
    int err;
-   unsigned char Q[16];
    const unsigned char *K1, *K2;
    unsigned long Vlen;
    siv_state siv;
@@ -170,24 +229,19 @@ int siv_encrypt(int cipher,
    if (err != CRYPT_OK) {
       return err;
    }
-   s_siv_bitand(siv.V, Q);
-   err = ctr_start(cipher, Q, K2, keylen/2, 0, CTR_COUNTER_BIG_ENDIAN | 16, &siv.ctr);
-   if (err != CRYPT_OK) {
-      goto out;
-   }
+
+   s_siv_bitand(siv.V, siv.Q);
    XMEMCPY(ct, siv.V, 16);
    ct += 16;
-   err = ctr_encrypt(pt, ct, ptlen, &siv.ctr);
-   if (err != CRYPT_OK) {
+
+   if ((err = s_ctr_crypt_memory(cipher, siv.Q, K2, keylen/2, pt, ct, ptlen)) != CRYPT_OK) {
       zeromem(ct, ptlen + 16);
-   } else {
-      *ctlen = ptlen + 16;
+      goto out;
    }
-   ctr_done(&siv.ctr);
+   *ctlen = ptlen + 16;
 
 out:
 #ifdef LTC_CLEAN_STACK
-   zeromem(Q, sizeof(Q));
    zeromem(&siv, sizeof(siv));
 #endif
 
@@ -210,13 +264,13 @@ out:
 */
 int siv_decrypt(int cipher,
     const unsigned char *key,    unsigned long keylen,
-    const unsigned char **ad,    unsigned long *adlen,
+    const unsigned char *ad[],   unsigned long adlen[],
     const unsigned char *ct,     unsigned long ctlen,
           unsigned char *pt,     unsigned long *ptlen)
 {
    int err;
-   unsigned char Q[16], *pt_work;
-   const unsigned char *K1, *K2, *V;
+   unsigned char *pt_work;
+   const unsigned char *K1, *K2, *ct_work;
    unsigned long Vlen;
    siv_state siv;
 
@@ -243,28 +297,19 @@ int siv_decrypt(int cipher,
    K1 = key;
    K2 = &key[keylen/2];
 
-   V = ct;
-   s_siv_bitand(V, Q);
-   ct += 16;
+   ct_work = ct;
+   s_siv_bitand(ct_work, siv.Q);
+   ct_work += 16;
 
-   err = ctr_start(cipher, Q, K2, keylen/2, 0, CTR_COUNTER_BIG_ENDIAN | 16, &siv.ctr);
-   if (err != CRYPT_OK) {
-      goto out;
-   }
-   err = ctr_decrypt(ct, pt_work, *ptlen, &siv.ctr);
-   if (err != CRYPT_OK) {
+   if ((err = s_ctr_crypt_memory(cipher, siv.Q, K2, keylen/2, ct_work, pt_work, *ptlen)) != CRYPT_OK) {
       goto out;
    }
    Vlen = sizeof(siv.V);
-   err = s_siv_S2V(cipher, K1, keylen/2, ad, adlen, pt_work, *ptlen, siv.V, &Vlen);
-#ifdef LTC_CLEAN_STACK
-   burn_stack(3 * 16 + 7 * sizeof(unsigned long) + 1 * sizeof(void*));
-#endif
-   if (err != CRYPT_OK) {
+   if ((err = s_siv_S2V(cipher, K1, keylen/2, ad, adlen, pt_work, *ptlen, siv.V, &Vlen)) != CRYPT_OK) {
       goto out;
    }
 
-   err = XMEM_NEQ(siv.V, V, Vlen);
+   err = XMEM_NEQ(siv.V, ct, Vlen);
    copy_or_zeromem(pt_work, pt, *ptlen, err);
 out:
 #ifdef LTC_CLEAN_STACK
@@ -277,8 +322,125 @@ out:
    return err;
 }
 
+/**
+  Process an entire SIV packet in one call.
+
+  @param cipher            The index of the cipher desired
+  @param direction         Encrypt or Decrypt mode (LTC_ENCRYPT or LTC_DECRYPT)
+  @param key               The secret key to use
+  @param keylen            The length of the secret key (octets)
+  @param in                The input
+  @param inlen             The length of the input
+  @param out               The output
+  @param outlen            [in/out]  The max size and resulting size of the output
+  @remark <...> is of the form <pointer, length> (void*, unsigned long) and contains the Associated Data
+  @return CRYPT_OK on success
+ */
+int siv_memory(                int cipher,           int direction,
+               const unsigned char *key,   unsigned long keylen,
+               const unsigned char *in,    unsigned long inlen,
+                     unsigned char *out,   unsigned long *outlen,
+               ...)
+{
+   int err;
+   va_list args;
+   siv_state siv;
+   unsigned char D[16], *in_buf = NULL, *out_work;
+   const unsigned char *aad, *K1, *K2, *in_work;
+   unsigned long aadlen, Dlen = sizeof(D), Vlen = sizeof(siv.V), in_work_len;
+
+   LTC_ARGCHK(key    != NULL);
+   LTC_ARGCHK(in     != NULL);
+   LTC_ARGCHK(out    != NULL);
+   LTC_ARGCHK(outlen != NULL);
+
+   if ((err = cipher_is_valid(cipher)) != CRYPT_OK) {
+      return err;
+   }
+   if (direction == LTC_ENCRYPT && *outlen < inlen + 16) {
+      return CRYPT_BUFFER_OVERFLOW;
+   } else if (direction == LTC_DECRYPT && (inlen < 16 || *outlen < inlen - 16)) {
+      return CRYPT_INVALID_ARG;
+   }
+
+   K1 = key;
+   K2 = &key[keylen/2];
+   in_work = in;
+   in_work_len = inlen;
+   out_work = out;
+
+   if (direction == LTC_DECRYPT) {
+      in_work_len -= 16;
+      in_buf = XMALLOC(in_work_len);
+      if (in_buf == NULL)
+         return CRYPT_MEM;
+      s_siv_bitand(in_work, siv.Q);
+      in_work += 16;
+
+      if ((err = s_ctr_crypt_memory(cipher, siv.Q, K2, keylen/2, in_work, in_buf, in_work_len)) != CRYPT_OK) {
+         goto err_out;
+      }
+      in_work = in_buf;
+   }
+
+   va_start(args, outlen);
+   aad = va_arg(args, const unsigned char*);
+   aadlen = va_arg(args, unsigned long);
+   if (aad == NULL || aadlen == 0) {
+      if ((err = s_siv_S2V_one(cipher, K1, keylen/2, siv.V, &Vlen)) != CRYPT_OK) {
+         goto err_out;
+      }
+   } else {
+      if ((err = s_siv_S2V_zero(cipher, K1, keylen/2, D, &Dlen)) != CRYPT_OK) {
+         goto err_out;
+      }
+
+      do {
+         if ((err = s_siv_S2V_dbl_xor_cmac(cipher, K1, keylen/2, aad, aadlen, D, Dlen)) != CRYPT_OK) {
+            goto err_out;
+         }
+         aad = va_arg(args, const unsigned char*);
+         if (aad == NULL)
+            break;
+         aadlen = va_arg(args, unsigned long);
+      } while (aadlen);
+
+      if ((err = s_siv_S2V_T(cipher, in_work, in_work_len, K1, keylen/2, D, siv.V, &Vlen)) != CRYPT_OK) {
+         goto err_out;
+      }
+   }
+
+   if (direction == LTC_DECRYPT) {
+      err = XMEM_NEQ(siv.V, in, Vlen);
+      copy_or_zeromem(in_buf, out, in_work_len, err);
+      *outlen = in_work_len;
+   } else {
+      s_siv_bitand(siv.V, siv.Q);
+      XMEMCPY(out_work, siv.V, 16);
+      out_work += 16;
+
+      if ((err = s_ctr_crypt_memory(cipher, siv.Q, K2, keylen/2, in, out_work, inlen)) != CRYPT_OK) {
+         zeromem(out, inlen + 16);
+         goto err_out;
+      }
+      *outlen = inlen + 16;
+   }
+err_out:
+   if (in_buf)
+      XFREE(in_buf);
+   va_end(args);
+#ifdef LTC_CLEAN_STACK
+   zeromem(D, sizeof(D));
+   zeromem(&siv, sizeof(siv));
+#endif
+   return err;
+}
+
 int siv_test(void)
 {
+#ifndef LTC_TEST
+   return CRYPT_NOP;
+#else
    /*
     * RFC5297 - A.1.  Deterministic Authenticated Encryption Example
     */
@@ -361,10 +523,11 @@ int siv_test(void)
 
    int err;
    unsigned n;
+   unsigned long buflen;
    unsigned char buf[MAX(sizeof(output_A1), sizeof(output_A2))];
 
    for (n = 0; n < sizeof(siv_tests)/sizeof(siv_tests[0]); ++n) {
-      unsigned long buflen = sizeof(buf);
+      buflen = sizeof(buf);
       if ((err = siv_encrypt(find_cipher("aes"),
                              siv_tests[n].Key, siv_tests[n].Keylen,
                              (const unsigned char **)siv_tests[n].ADs, siv_tests[n].ADlens,
@@ -383,15 +546,72 @@ int siv_test(void)
                              buf, &buflen)) != CRYPT_OK) {
          return err;
       }
-      if (compare_testvector(buf, buflen, siv_tests[n].Plaintext, siv_tests[n].Plaintextlen, siv_tests[n].name, n + 1000) != 0) {
+      if (compare_testvector(buf, buflen, siv_tests[n].Plaintext, siv_tests[n].Plaintextlen, siv_tests[n].name, n + 0x1000) != 0) {
          return CRYPT_FAIL_TESTVECTOR;
       }
    }
 
-   return CRYPT_OK;
-}
-#endif
+   /* Testcase 0x2 */
+   buflen = sizeof(buf);
+   if ((err = siv_memory(find_cipher("aes"), LTC_ENCRYPT,
+                         siv_tests[0].Key, siv_tests[0].Keylen,
+                         siv_tests[0].Plaintext, siv_tests[0].Plaintextlen,
+                         buf, &buflen,
+                         AD_A1, sizeof(AD_A1),
+                         NULL)) != CRYPT_OK) {
+      return err;
+   }
+   if (compare_testvector(buf, buflen, siv_tests[0].output, siv_tests[0].outputlen, siv_tests[0].name, n) != 0) {
+      return CRYPT_FAIL_TESTVECTOR;
+   }
+   /* Testcase 0x1002 */
+   buflen = sizeof(buf);
+   if ((err = siv_memory(find_cipher("aes"), LTC_DECRYPT,
+                         siv_tests[0].Key, siv_tests[0].Keylen,
+                         siv_tests[0].output, siv_tests[0].outputlen,
+                         buf, &buflen,
+                         AD_A1, sizeof(AD_A1),
+                         NULL)) != CRYPT_OK) {
+      return err;
+   }
+   if (compare_testvector(buf, buflen, siv_tests[0].Plaintext, siv_tests[0].Plaintextlen, siv_tests[0].name, n + 0x1000) != 0) {
+      return CRYPT_FAIL_TESTVECTOR;
+   }
 
-/* ref:         $Format:%D$ */
-/* git commit:  $Format:%H$ */
-/* commit time: $Format:%ai$ */
+   n++;
+
+   /* Testcase 0x3 */
+   buflen = sizeof(buf);
+   if ((err = siv_memory(find_cipher("aes"), LTC_ENCRYPT,
+                         siv_tests[1].Key, siv_tests[1].Keylen,
+                         siv_tests[1].Plaintext, siv_tests[1].Plaintextlen,
+                         buf, &buflen,
+                         ad_A2[0], adlen_A2[0],
+                         ad_A2[1], adlen_A2[1],
+                         ad_A2[2], adlen_A2[2],
+                         NULL)) != CRYPT_OK) {
+      return err;
+   }
+   if (compare_testvector(buf, buflen, siv_tests[1].output, siv_tests[1].outputlen, siv_tests[1].name, n) != 0) {
+      return CRYPT_FAIL_TESTVECTOR;
+   }
+   /* Testcase 0x1003 */
+   buflen = sizeof(buf);
+   if ((err = siv_memory(find_cipher("aes"), LTC_DECRYPT,
+                         siv_tests[1].Key, siv_tests[1].Keylen,
+                         siv_tests[1].output, siv_tests[1].outputlen,
+                         buf, &buflen,
+                         ad_A2[0], adlen_A2[0],
+                         ad_A2[1], adlen_A2[1],
+                         ad_A2[2], adlen_A2[2],
+                         NULL)) != CRYPT_OK) {
+      return err;
+   }
+   if (compare_testvector(buf, buflen, siv_tests[1].Plaintext, siv_tests[1].Plaintextlen, siv_tests[1].name, n + 0x1000) != 0) {
+      return CRYPT_FAIL_TESTVECTOR;
+   }
+   return CRYPT_OK;
+#endif
+}
+
+#endif

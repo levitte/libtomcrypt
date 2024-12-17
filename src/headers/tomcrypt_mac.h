@@ -569,10 +569,19 @@ int chacha20poly1305_test(void);
 
 int siv_encrypt(int cipher,
     const unsigned char *key,    unsigned long keylen,
-    const unsigned char **ad,    unsigned long *adlen,
-    const unsigned char *in,     unsigned long inlen,
-          unsigned char *out,    unsigned long *outlen);
-
+    const unsigned char *ad[],   unsigned long adlen[],
+    const unsigned char *pt,     unsigned long ptlen,
+          unsigned char *ct,     unsigned long *ctlen);
+int siv_decrypt(int cipher,
+    const unsigned char *key,    unsigned long keylen,
+    const unsigned char *ad[],   unsigned long adlen[],
+    const unsigned char *ct,     unsigned long ctlen,
+          unsigned char *pt,     unsigned long *ptlen);
+int siv_memory(                int cipher,           int direction,
+               const unsigned char *key,   unsigned long keylen,
+               const unsigned char *in,    unsigned long inlen,
+                     unsigned char *out,   unsigned long *outlen,
+               ...) LTC_NULL_TERMINATED;
 int siv_test(void);
 
 #endif
