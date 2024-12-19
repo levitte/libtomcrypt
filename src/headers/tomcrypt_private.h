@@ -168,6 +168,7 @@ int func_name (hash_state * md, const unsigned char *in, unsigned long inlen)   
 int ocb3_int_ntz(unsigned long x);
 void ocb3_int_xor_blocks(unsigned char *out, const unsigned char *block_a, const unsigned char *block_b, unsigned long block_len);
 
+int omac_vprocess(omac_state *omac, const unsigned char *in,  unsigned long inlen, va_list args);
 
 /* tomcrypt_math.h */
 
