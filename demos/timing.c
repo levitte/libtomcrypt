@@ -1153,8 +1153,13 @@ static void time_macs(void)
 
 static void time_encmacs_(unsigned long MAC_SIZE)
 {
-#if defined(LTC_EAX_MODE) || defined(LTC_OCB_MODE) || defined(LTC_OCB3_MODE) || defined(LTC_CCM_MODE) || defined(LTC_GCM_MODE)
-   unsigned char *buf, IV[16], key[16], tag[16];
+#if defined(LTC_EAX_MODE) || defined(LTC_OCB_MODE) || defined(LTC_OCB3_MODE) || \
+   defined(LTC_CCM_MODE) || defined(LTC_GCM_MODE) || defined(LTC_SIV_MODE)
+#if defined(LTC_SIV_MODE)
+   unsigned char *aad[4];
+   unsigned long buflen;
+#endif
+   unsigned char *buf, IV[16], key[32], tag[16];
    ulong64 t1, t2;
    unsigned long x, z;
    int err, cipher_idx;
@@ -1171,8 +1176,8 @@ static void time_encmacs_(unsigned long MAC_SIZE)
    cipher_idx = find_cipher("aes");
 
    yarrow_read(buf, MAC_SIZE*1024, &yarrow_prng);
-   yarrow_read(key, 16, &yarrow_prng);
-   yarrow_read(IV, 16, &yarrow_prng);
+   yarrow_read(key, sizeof(key), &yarrow_prng);
+   yarrow_read(IV, sizeof(IV), &yarrow_prng);
 
 #ifdef LTC_EAX_MODE
    t2 = -1;
@@ -1308,8 +1313,38 @@ __attribute__ ((aligned (16)))
    }
    fprintf(stderr, "GCM (precomp)\t\t%9"PRI64"u\n", t2/(ulong64)(MAC_SIZE*1024));
    }
-
 #endif
+
+#ifdef LTC_SIV_MODE
+   for(z = 0; z < 4; z++) {
+      aad[z] = IV + z * 4;
+   }
+   for(z = 0; z < 4; z++) {
+      t2 = -1;
+      for (x = 0; x < 10000; x++) {
+           buflen = MAC_SIZE*1024;
+           t_start();
+           t1 = t_read();
+           if ((err = siv_memory(cipher_idx, LTC_ENCRYPT,
+                                 key, 32,
+                                 buf, MAC_SIZE*1024 - 16,
+                                 buf, &buflen,
+                                 aad[0], 16,
+                                 aad[1], 12,
+                                 aad[2], 8,
+                                 aad[3], 4,
+                                 NULL)) != CRYPT_OK) {
+              fprintf(stderr, "\nSIV error... %s\n", error_to_string(err));
+              exit(EXIT_FAILURE);
+           }
+           t1 = t_read() - t1;
+           if (t1 < t2) t2 = t1;
+      }
+      aad[3-z] = NULL;
+      fprintf(stderr, "SIV (%lu x AAD)\t\t%9"PRI64"u\n", 4-z, t2/(ulong64)(MAC_SIZE*1024));
+   }
+#endif
+
    XFREE(buf);
 #else
    LTC_UNUSED_PARAM(MAC_SIZE);
