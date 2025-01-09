@@ -239,8 +239,8 @@ src/encauth/ocb3/ocb3_add_aad.o src/encauth/ocb3/ocb3_decrypt.o src/encauth/ocb3
 src/encauth/ocb3/ocb3_decrypt_verify_memory.o src/encauth/ocb3/ocb3_done.o \
 src/encauth/ocb3/ocb3_encrypt.o src/encauth/ocb3/ocb3_encrypt_authenticate_memory.o \
 src/encauth/ocb3/ocb3_encrypt_last.o src/encauth/ocb3/ocb3_init.o src/encauth/ocb3/ocb3_int_ntz.o \
-src/encauth/ocb3/ocb3_int_xor_blocks.o src/encauth/ocb3/ocb3_test.o src/hashes/blake2b.o \
-src/hashes/blake2s.o src/hashes/chc/chc.o src/hashes/helper/hash_file.o \
+src/encauth/ocb3/ocb3_int_xor_blocks.o src/encauth/ocb3/ocb3_test.o src/encauth/siv/siv.o \
+src/hashes/blake2b.o src/hashes/blake2s.o src/hashes/chc/chc.o src/hashes/helper/hash_file.o \
 src/hashes/helper/hash_filehandle.o src/hashes/helper/hash_memory.o \
 src/hashes/helper/hash_memory_multi.o src/hashes/md2.o src/hashes/md4.o src/hashes/md5.o \
 src/hashes/rmd128.o src/hashes/rmd160.o src/hashes/rmd256.o src/hashes/rmd320.o src/hashes/sha1.o \

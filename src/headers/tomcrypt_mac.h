@@ -565,3 +565,24 @@ int chacha20poly1305_memory(const unsigned char *key, unsigned long keylen,
 int chacha20poly1305_test(void);
 
 #endif /* LTC_CHACHA20POLY1305_MODE */
+#ifdef LTC_SIV_MODE
+
+int siv_encrypt_memory(                int  cipher,
+                       const unsigned char *key,    unsigned long  keylen,
+                       const unsigned char *ad[],   unsigned long  adlen[],
+                       const unsigned char *pt,     unsigned long  ptlen,
+                             unsigned char *ct,     unsigned long *ctlen);
+int siv_decrypt_memory(                int  cipher,
+                       const unsigned char *key,    unsigned long  keylen,
+                       const unsigned char *ad[],   unsigned long  adlen[],
+                       const unsigned char *ct,     unsigned long  ctlen,
+                             unsigned char *pt,     unsigned long *ptlen);
+int siv_memory(                int  cipher,           int  direction,
+               const unsigned char *key,    unsigned long  keylen,
+               const unsigned char *in,     unsigned long  inlen,
+                     unsigned char *out,    unsigned long *outlen,
+                                   ...) LTC_NULL_TERMINATED;
+int siv_test(void);
+
+#endif
+

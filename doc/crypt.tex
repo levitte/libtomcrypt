@@ -2576,6 +2576,166 @@ IMPORTANT NOTICE 2: As mentioned in \ref{chacha20poly1305} there exists a discre
 In order to enable OpenSSH compatibility, the flag \textit{CHACHA20POLY1305\_OPENSSH\_COMPAT} has to be \textbf{OR}'ed into
 the \textit{direction} parameter.
 
+
+\mysection{SIV}
+\label{SIV}
+
+The SIV (Synthetic Initialization Vector) authenticated encryption is a block cipher mode of encryption
+defined by \url{https://tools.ietf.org/html/rfc5297}.
+
+In contrast to all the other AEAD modes, SIV provides no iterative API. Instead it only provides one--shot APIs.
+
+AEAD algorithm design usually suggests using a separate Nonce (also called IV) and additional authenticated Data (AAD).
+SIV treats this slightly different and does not enforce any of the two, but leaves it up to the user.
+Also SIV allows passing multiple sets of data as AAD, up to a maximum of \texttt{126} elements.
+In case one wants to use a Nonce in a classical style it is suggested to pass it as the last of the AAD elements,
+thereby limiting the number of AAD to \texttt{125}.
+
+\subsection{Encryption / Decryption}
+To encrypt and create a tag resp. decrypt and check the tag, the following API functions can be used.
+
+\index{siv\_encrypt\_memory()}
+\begin{verbatim}
+int siv_encrypt_memory(                int  cipher,
+                       const unsigned char *key,    unsigned long  keylen,
+                       const unsigned char *ad[],   unsigned long  adlen[],
+                       const unsigned char *pt,     unsigned long  ptlen,
+                             unsigned char *ct,     unsigned long *ctlen);
+\end{verbatim}
+This encrypts the data where \textit{pt} is the plaintext and \textit{ct} is the ciphertext.
+The length of the plaintext is given in \textit{ptlen} and the length of the ciphertext is given in \textit{ctlen}.
+\textit{ctlen} shall contain the max buffer size allocated at \textit{ct} on input, and will be updated with the
+written length on successful encryption.
+
+The buffer of \textit{ct} shall be at least \texttt{ptlen + 16} bytes wide.
+
+The key to the encrypt operation is passed in \textit{key} of length  \textit{keylen}.
+
+The AAD is passed as array of pointers in \textit{ad}. The length of each AAD is passed as array of
+\textit{unsigned long} in \textit{adlen}.
+As soon as an array element of \textit{ad} is hit which equals \texttt{NULL} or an array element of \textit{adlen}
+is hit which equals \texttt{0}, processing of the AAD is stopped.
+
+\index{siv\_decrypt\_memory()}
+\begin{verbatim}
+int siv_decrypt_memory(                int  cipher,
+                       const unsigned char *key,    unsigned long  keylen,
+                       const unsigned char *ad[],   unsigned long  adlen[],
+                       const unsigned char *ct,     unsigned long  ctlen,
+                             unsigned char *pt,     unsigned long *ptlen);
+\end{verbatim}
+This decrypts the data where \textit{ct} is the ciphertext of length \textit{ctlen} and \textit{pt} is the plaintext of length \textit{ptlen}.
+\textit{ptlen} shall contain the max buffer size allocated at \textit{pt} on input, and will be updated with the
+written lenth on successful decryption.
+
+The buffer of \textit{pt} shall be at least \texttt{ctlen - 16} bytes wide.
+
+The AAD is processed in the same way as in the encrypt function.
+
+An example of encryption and decryption with SIV using multiple AAD and a Nonce is given below.
+
+\begin{small}
+\begin{verbatim}
+#include <tomcrypt.h>
+
+int main(void)
+{
+   int err;
+   unsigned char plain[16] = {0};
+   unsigned char ct[sizeof(plain) + 16] = {0};
+   unsigned long plainlen = sizeof(plain), ctlen = sizeof(ct);
+
+   register_cipher(&aes_desc);
+
+   /* We need to cast the AAD strings because the API asks for an `unsigned char*`
+    * but a string is on most platforms defined as a "signed" `char*`. */
+   if ((err = siv_encrypt_memory(find_cipher("aes"),
+                                 ((unsigned char[32]) {0x0}), 32,
+                                 ((const unsigned char*[]) {(void*)"aad0", (void*)"aad1",
+                                                            (void*)"NONCE", NULL}),
+                                 ((unsigned long[]) {4, 4, 5, 0}),
+                                 plain, plainlen,
+                                 ct, &ctlen)) != CRYPT_OK) {
+      whine_and_pout(err);
+   }
+
+   if ((err = siv_decrypt_memory(find_cipher("aes"),
+                                 ((unsigned char[32]) {0x0}), 32,
+                                 ((const unsigned char*[]) {(void*)"aad0", (void*)"aad1",
+                                                            (void*)"NONCE", NULL}),
+                                 ((unsigned long[]) {4, 4, 5, 0}),
+                                 ct, ctlen,
+                                 plain, &plainlen)) != CRYPT_OK) {
+      whine_and_pout(err);
+   }
+
+   return EXIT_SUCCESS;
+}
+\end{verbatim}
+\end{small}
+
+\subsection{One--Shot Packet}
+To process a single packet under any given key the following helper function can be used.
+
+\index{siv\_memory()}
+\begin{verbatim}
+int siv_memory(                int  cipher,           int  direction,
+               const unsigned char *key,    unsigned long  keylen,
+               const unsigned char *in,     unsigned long  inlen,
+                     unsigned char *out,    unsigned long *outlen,
+                                   ...);
+\end{verbatim}
+
+This will execute a SIV operation of the \textit{direction} (\texttt{LTC\_ENCRYPT} resp. \texttt{LTC\_DECRYPT})
+using the \textit{cipher} with the \textit{key} of len \textit{keylen}.
+The AAD is optionally passed as varargs of the form \textit{(const unsigned char*, unsigned long)}, which musst be
+NULL terminated.
+The input is passed via the \textit{in} argument of length \textit{inlen}.
+The output is stored in the buffer pointer to by the \textit{out} argument where the length is passed as \textit{outlen}.
+\textit{outlen} shall contain the initial size of the buffer behind \textit{out} when calling the function and on
+return it will contain the written size.
+
+In case the operation is \textit{encryption} the buffer of \textit{out} shall be at least \texttt{inlen + 16} bytes wide.
+In the case of \textit{decryption} the buffer of \textit{out} shall be at least \texttt{inlen - 16} bytes wide.
+
+An example of encryption and decryption with the one--shot API of SIV using multiple AAD is given below.
+
+\begin{small}
+\begin{verbatim}
+#include <tomcrypt.h>
+
+int main(void)
+{
+   int err;
+   unsigned char plain[16] = {0};
+   unsigned char ct[sizeof(plain) + 16] = {0};
+   unsigned long plainlen = sizeof(plain), ctlen = sizeof(ct);
+
+   register_cipher(&aes_desc);
+
+   /* Note that constant length values must be suffixed by `uL` in order
+    * to operate correctly cross-platform. */
+   if ((err = siv_memory(find_cipher("aes"), LTC_ENCRYPT,
+                         ((unsigned char[32]) {0x0}), 32,
+                         plain, plainlen,
+                         ct, &ctlen,
+                         "aad0", 4uL, "aad1", 4uL, "NONCE", 5uL, NULL)) != CRYPT_OK) {
+      whine_and_pout(err);
+   }
+
+   if ((err = siv_memory(find_cipher("aes"), LTC_DECRYPT,
+                         ((unsigned char[32]) {0x0}), 32,
+                         ct, ctlen,
+                         plain, &plainlen,
+                         "aad0", 4uL, "aad1", 4uL, "NONCE", 5uL, NULL)) != CRYPT_OK) {
+      whine_and_pout(err);
+   }
+
+   return EXIT_SUCCESS;
+}
+\end{verbatim}
+\end{small}
+
 \chapter{One-Way Cryptographic Hash Functions}
 \mysection{Core Functions}
 Like the ciphers, there are hash core functions and a universal data type to hold the hash state called \textit{hash\_state}.  To initialize hash
